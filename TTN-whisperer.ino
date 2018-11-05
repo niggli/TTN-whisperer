@@ -4,14 +4,15 @@
  *
  * This sketch is a low power optimized LoRaWan node for sending sensor data
  * to TTN (The Things Network) with a WhisperNode Lora from Wisen.co.au. The
- * data sent to TTN is the temperature read from a DS18B20 sensor and the 
- * battery voltage, measured with the on-board voltage divider. It can be used
- * as a starting point for own applications based on the WhisperNode Lora.
+ * data sent to TTN is the temperature read from a DS18B20 sensor, the humidity 
+ * from an AM2320 and the battery voltage, measured with the on-board voltage 
+ * divider. It can be used as a starting point for own applications based on the
+ * WhisperNode Lora.
  * 
  * Power optimisations:
  * - no LED usage
- * - only two bytes of LoRa payload
- * - sleep for a long tim
+ * - only three bytes of LoRa payload
+ * - sleep for a long time
  * - send measurement only if difference in value
  * - memorize OneWire sensor adresses on startup
  * - deactivate voltage divider when not used
@@ -21,6 +22,7 @@
  * Further power optimisations to be done in future:
  * - reduce serial speed in DEBUG mode
  * - power off OneWire bus when not used
+ * - power off I2C sensor when not used
  * - change delay of OneWire library to a sleep
  * - put on-board Flash to powerdown mode
  * - set all unused pins to input/pullup
@@ -45,6 +47,9 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
+#include "Adafruit_Sensor.h"
+#include "Adafruit_AM2320.h"
+
 /* Constants and constant variables ****************************/
 
 // if debug mode is active, use LED and serial output. Powered by USB/FTDI-adapter.
@@ -55,8 +60,8 @@
 const byte SLEEPCYCLES = 38;      // 5 minutes
 const byte MAX_NOSEND_CYCLES = 4; // Send at least every 20 minutes
 #else
-const byte SLEEPCYCLES = 225;      // 30 minutes
-const byte MAX_NOSEND_CYCLES = 4;  // Send at least every 2 hours
+const byte SLEEPCYCLES = 214;      // 30 minutes is 225 cycles. Experimentally 214 seems to be closed (clock offset)
+const byte MAX_NOSEND_CYCLES = 3;  // Wait maximum of 3 x 30 minutes, send at least every 2 hours
 #endif
 
 const byte PIN_LED = 6;
@@ -100,7 +105,8 @@ bool joined = false;
 bool sleeping = false;
 byte nosend_cycles = 0;
 
-float temp_sent = 0.0;
+float temperature_sent = 0.0;
+float humidity_sent = 0.0;
 
 // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
 OneWire oneWire(PIN_ONE_WIRE);
@@ -110,6 +116,9 @@ DallasTemperature sensors(&oneWire);
 
 // arrays to hold device addresses
 DeviceAddress sensor_address_air;
+
+// I2C humidity sensor
+Adafruit_AM2320 am2320 = Adafruit_AM2320();
 
 /* Functions ***************************************************/
 
@@ -263,38 +272,53 @@ void onEvent (ev_t ev)
 
 void do_send(osjob_t* j) {
   byte buffer[22];
-  float temp_float = 0.0;
-  float difference = 0.0;
+  float temperature_float = 0.0;
+  float humidity_float = 0.0;
+  float voltage_float = 0.0;
+  float temperature_difference = 0.0;
+  float humidity_difference = 0.0;
 
+  // measure values and calculate difference
   sensors.requestTemperatures(); // Send the command to get temperatures
-  temp_float = sensors.getTempC(sensor_address_air);
-  difference = temp_float - temp_sent;
-
-  if ( ((abs(difference)) >= 0.75)
+  temperature_float = sensors.getTempC(sensor_address_air);
+  temperature_difference = temperature_float - temperature_sent;
+  humidity_float = am2320.readHumidity();
+  humidity_difference = humidity_float - humidity_sent;
+  
+  // Send something only if values changed or maximum sleep time reached
+  if ( ((abs(temperature_difference)) >= 0.5)
+    || ((abs(humidity_difference)) >= 5.0)
     || (nosend_cycles >= MAX_NOSEND_CYCLES) )
   {
-    temp_sent = temp_float;
+    temperature_sent = temperature_float;
+    humidity_sent = humidity_float;
     nosend_cycles = 0;
     
-    // scale to 0.25deg C per bit
-    temp_float = temp_float * 4 + 80;
+    // scale temperature to 0.25deg C per bit
+    temperature_float = temperature_float * 4 + 80;
+    buffer[0] = (int)temperature_float;
   
-    buffer[0] = (int)temp_float;
+    // don't scale humidity yet (basically 6 bits would be enough for a 2% resolution)
+    buffer[2] = (int)humidity_float;
 
     // Read supply voltage
     pinMode(PIN_VOLTAGE_ADC, INPUT);
     analogReference(INTERNAL); // use internal 1.1V reference
     digitalWrite(PIN_ADC_ACTIVATE, HIGH);
     delay(5);
-    
     buffer[1] = (int)(analogRead(PIN_VOLTAGE_ADC) >>2);
     digitalWrite(PIN_ADC_ACTIVATE, LOW);
-    #if DEBUGMODE
-      temp_float = (7.282 * buffer[1]) / 256;
-      Serial.print(F("Supply voltage:"));
-      Serial.println(temp_float, DEC);
-    #endif
     pinMode(PIN_VOLTAGE_ADC, OUTPUT); // has to be set back to output, if not LMIC crashes although according to schema there is no connection...
+    
+    #if DEBUGMODE
+      Serial.print(F("Temperature:"));
+      Serial.print(temperature_sent, DEC);
+      Serial.print(F(" Humidity:"));
+      Serial.println(humidity_float, DEC);
+      voltage_float = (7.282 * buffer[1]) / 256;
+      Serial.print(F("Supply voltage:"));
+      Serial.println(voltage_float, DEC);
+    #endif
     
     if (LMIC.opmode & OP_TXRXPEND)
     {
@@ -304,14 +328,14 @@ void do_send(osjob_t* j) {
     } else
     {
       // Prepare upstream data transmission at the next possible time.
-      LMIC_setTxData2(1, (uint8_t*) buffer, 2 , 0);
+      LMIC_setTxData2(1, (uint8_t*) buffer, 3 , 0);
       #if DEBUGMODE
         Serial.println(F("Sending: "));
       #endif
     }
   } else
   {
-    //almost the same temperature, don't send
+    //almost the same temperature and humidity, don't send
     nosend_cycles++;
     sleeping = true;
   }
@@ -344,7 +368,6 @@ void setup()
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_ADC_ACTIVATE, OUTPUT);
 
-
   // Start up the OneWire library
   sensors.begin();
   if (!sensors.getAddress(sensor_address_air, 0))
@@ -356,6 +379,9 @@ void setup()
   {
     sensors.setResolution(sensor_address_air, TEMPERATURE_PRECISION);
   }
+  
+  // Start up the AM2320 library
+  am2320.begin();
   
 }
 
@@ -383,5 +409,6 @@ void loop()
   #if DEBUGMODE
     digitalWrite(PIN_LED,((millis()/100) % 2) && (joined==false)); // only blinking when joining and not sleeping
   #endif
+
 }
 

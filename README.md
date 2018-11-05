@@ -1,24 +1,6 @@
 # TTN-whisperer
 Lowpower optimized LoRaWAN node connecting to The Things Network, running on a Whisper Node LoRa board
 
-This sketch is a low power optimized LoRaWan node for sending sensor data to TTN (The Things Network)
-with a WhisperNode Lora from Wisen.co.au. The data sent to TTN is the temperature read from a DS18B20
-sensor and the battery voltage, measured with the on-board voltage divider. It can be used as a starting
-point for own applications based on the WhisperNode Lora.
-
-Power optimisations:
-- no LED usage
-- only two bytes of LoRa payload
-- sleep for a long tim
-- send measurement only if difference in value
-- memorize OneWire sensor adresses on startup
-- deactivate voltage divider when not used
-- use lower DS18B20 resolution
-- sent raw ADC data, calculation on server side
-
-Further power optimisations to be done in future:
-- reduce serial speed in DEBUG mode
-- power off OneWire bus when not used
-- change delay of OneWire library to a sleep
-- put on-board Flash to powerdown mode
-- set all unused pins to input/pullup
+This sketch is a low power optimized LoRaWan node for sending sensor datato TTN (The Things Network) with a WhisperNode Lora from Wisen.co.au. Thedata sent to TTN is the temperature read from a DS18B20 sensor, the humidity from an AM2320 and the battery voltage, measured with the on-board voltage divider. It can be used as a starting point for own applications based on theWhisperNode Lora.Power optimisations:- no LED usage- only three bytes of LoRa payload- sleep for a long time- send measurement only if difference in value- memorize OneWire sensor adresses on startup- deactivate voltage divider when not used- use lower DS18B20 resolution- sent raw ADC data, calculation on server sideFurther power optimisations to be done in future:- reduce serial speed in DEBUG mode- power off OneWire bus when not used- power off I2C sensor when not used- change delay of OneWire library to a sleep- put on-board Flash to powerdown mode- set all unused pins to input/pullup
+This uses OTAA (Over-the-air activation), where where a DevEUI andapplication key is configured, which are used in an over-the-airactivation procedure where a DevAddr and session keys areassigned/generated for use with all further communication.
+Note: LoRaWAN per sub-band duty-cycle limitation is enforced (1% ing1, 0.1% in g2), but not the TTN fair usage policy (which is probablyviolated by this sketch when left running for longer)!Do not forget to define the radio type correctly in config.h.
